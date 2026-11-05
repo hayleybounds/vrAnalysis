@@ -7,8 +7,7 @@ def repo_path() -> Path:
 
 
 def local_data_path() -> Path:
-    # return Path("C:/Users/andrew/Documents/localData")
-    return storage_path()
+    return Path(r"\\zenneth.cortexlab.net\Subjects")
 
 
 def literature_data_path() -> Path:
@@ -16,7 +15,7 @@ def literature_data_path() -> Path:
 
 
 def storage_path() -> Path:
-    return Path("D:/localData")
+    return Path(r"C:\Users\Hayley")
 
 
 def analysis_path() -> Path:

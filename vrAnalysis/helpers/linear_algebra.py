@@ -2,13 +2,18 @@ import numpy as np
 import scipy as sp
 from sklearn.decomposition import IncrementalPCA
 
-import torch
 from .. import faststats as fs
 from .indexing import cvFoldSplit
 from .wrangling import named_transpose, as_tensor
 from .signals import vectorCorrelation
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+def _torch():
+    import torch
+    return torch
+
+def _device():
+    torch = _torch()
+    return "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def abcov(A, B, correction=True):
@@ -29,6 +34,7 @@ def batch_cov(input, centered=True, correction=True):
 
     if correction=True, will use */(N-1) otherwise will use */N
     """
+    torch = _torch()
     if isinstance(input, np.ndarray):
         was_numpy = True
         input = torch.tensor(input)
@@ -67,7 +73,7 @@ def batch_cov(input, centered=True, correction=True):
     return bcov
 
 
-def matrix_root(matrix: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+def matrix_root(matrix, eps: float = 1e-6):
     """Measure the square root of a matrix (matrix root, not element-wise).
 
     Parameters
@@ -81,6 +87,7 @@ def matrix_root(matrix: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     -------
     torch.Tensor: The square root of the matrix.
     """
+    torch = _torch()
     matrix = as_tensor(matrix)
     symmetric_matrix = 0.5 * (matrix + matrix.T)
     evals, evecs = torch.linalg.eigh(symmetric_matrix)

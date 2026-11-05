@@ -2,13 +2,15 @@ import sys
 import inspect
 import math
 import numpy as np
-import torch
 from itertools import chain
 from hashlib import sha256
-from typing import Union, Optional
+from typing import TYPE_CHECKING, Union, Optional
+
+if TYPE_CHECKING:
+    import torch
 
 
-def as_tensor(data: Union[np.ndarray, torch.Tensor, list, tuple], dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+def as_tensor(data, dtype=None):
     """
     Convert input data to a torch tensor, handling multiple input types.
 
@@ -25,6 +27,7 @@ def as_tensor(data: Union[np.ndarray, torch.Tensor, list, tuple], dtype: Optiona
     torch.Tensor
         The data as a torch tensor.
     """
+    import torch
     if isinstance(data, np.ndarray):
         data = torch.from_numpy(data)
     elif not isinstance(data, torch.Tensor):

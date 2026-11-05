@@ -1,6 +1,5 @@
 import numpy as np
 import scipy as sp
-import torch
 from numba import njit, prange
 from scipy.signal import correlate
 from .wrangling import transpose_list, named_transpose
@@ -375,6 +374,7 @@ def convolveToeplitz(data, kk, axis=-1, mode="same", device="cpu"):
     assert -1 <= axis <= data.ndim, "requested axis does not exist"
     data = np.moveaxis(data, axis, -1)  # move target axis
     dataShape = data.shape
+    import torch
     with torch.no_grad():
         # if there are not many signals to convolve, this is a tiny slower
         # if there are many signals to convolve (order of ROIs in a recording), this is waaaaayyyy faster
