@@ -8,8 +8,9 @@ from numpyencoder import NumpyEncoder
 import speedystats as ss
 from ..files import local_data_path
 from .base import SessionData
-from roicat_support.classifier import load_classifier
-from roicat_support.classifier import get_results_path as get_classifier_results_path
+def _load_roicat():
+    from roicat_support.classifier import load_classifier, get_results_path as get_classifier_results_path
+    return load_classifier, get_classifier_results_path
 
 
 @dataclass
@@ -37,6 +38,9 @@ class B2RegistrationOpts:
         Time constant for deconvolution. Default is 1.5.
     fs : int, optional
         Sampling frequency in Hz. Default is 6.
+    use_photodiode : bool, optional
+        Refine trial starts with photodiode flips (default True). If False,
+        uses mpep UDP times instead; only allowed when imaging is False.
     """
 
     vrBehaviorVersion: int = 1
@@ -48,6 +52,7 @@ class B2RegistrationOpts:
     neuropilCoefficient: float = 0.7
     tau: float = 1.5
     fs: int = 6
+    use_photodiode: bool = True
     moveRawData: bool = field(
         default=False,
         metadata={
@@ -55,6 +60,10 @@ class B2RegistrationOpts:
             "note": "For backwards compatibility only; this option is never used in current code.",
         },
     )
+
+    def __post_init__(self) -> None:
+        if not self.use_photodiode and self.imaging:
+            raise ValueError("use_photodiode=False is only allowed when imaging=False")
 
 
 @dataclass
@@ -97,6 +106,7 @@ class B2SessionParams:
     exclude_silent_rois: bool = True
     neuropil_coefficient: float | None = None
     exclude_redundant_rois: bool = True
+    imaging: bool = True
 
     @classmethod
     def from_dict(cls, params: Dict[str, Any]) -> "B2SessionParams":
@@ -123,8 +133,12 @@ class B2SessionParams:
         It loads the ROICaT classifier to get the label_to_id mapping for
         validating good_labels.
         """
-        classifier = load_classifier()
-        self._label_to_id = classifier["label_to_id"]
+        if self.good_labels is not None and self.imaging:
+            load_classifier, _ = _load_roicat()
+            classifier = load_classifier()
+            self._label_to_id = classifier["label_to_id"]
+        else:
+            self._label_to_id = {}
 
     def update(self, **kwargs) -> None:
         """
@@ -790,10 +804,14 @@ class B2Session(SessionData):
         for key, val in values.items():
             self.set_value(key, val)
 
-        # Also load ROICaT Classifier Results if they exist
-        results_path = get_classifier_results_path(self)
-        if results_path.exists():
-            self.roicat_classifier = joblib.load(results_path)
+        # Also load ROICaT Classifier Results if they exist (imaging only)
+        if self.opts.imaging:
+            _, get_classifier_results_path = _load_roicat()
+            results_path = get_classifier_results_path(self)
+            if results_path.exists():
+                self.roicat_classifier = joblib.load(results_path)
+            else:
+                self.roicat_classifier = None
         else:
             self.roicat_classifier = None
 
