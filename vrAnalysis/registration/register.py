@@ -8,10 +8,10 @@ import scipy.io as scio
 from .. import helpers
 from ..sessions import B2Session
 from ..sessions.base import LoadingRecipe
-from ..sessions.b2session import B2RegistrationOpts, B2Session
+from ..sessions.b2session import B2RegistrationOpts, B2Session, B2SessionParams
 from .behavior import register_behavior
 from .oasis import oasis_deconvolution
-from .redcell import RedCellProcessing
+# from .redcell import RedCellProcessing
 
 
 @dataclass
@@ -115,15 +115,16 @@ class B2Registration(B2Session):
         ValueError
             If session directory does not exist.
         """
-        super().__init__(mouse_name, date_string, session_id)
         if isinstance(opts, B2RegistrationOpts):
-            self.opts = opts
+            resolved_opts = opts
         elif is_dataclass(opts):
-            self.opts = B2RegistrationOpts(**asdict(opts))
+            resolved_opts = B2RegistrationOpts(**asdict(opts))
         elif isinstance(opts, Mapping):
-            self.opts = B2RegistrationOpts(**opts)
+            resolved_opts = B2RegistrationOpts(**opts)
         else:
             raise TypeError(f"opts must be B2RegistrationOpts, a dataclass, or a mapping; got {type(opts)}")
+        super().__init__(mouse_name, date_string, session_id, B2SessionParams(imaging=resolved_opts.imaging))
+        self.opts = resolved_opts
 
         if not self.data_path.exists():
             raise ValueError(f"Session directory does not exist for {self.session_print()}")
@@ -227,49 +228,62 @@ class B2Registration(B2Session):
         rotaryEncoder = self.get_timeline_var("rotaryEncoder")
         rotaryPosition = self.convert_rotary_encoder_to_position(rotaryEncoder, self.vr_file["rigInfo"])
 
+        tl_inputs = self.timeline_inputs()
+
         # Get Licks (uses an edge counter)
-        lickDetector = self.get_timeline_var("lickDetector")  # load lick detector copy
-        lickSamples = np.where(helpers.diffsame(lickDetector) == 1)[0].astype(np.uint64)  # timeline samples of lick times
+        if "lickDetector" in tl_inputs:
+            lickDetector = self.get_timeline_var("lickDetector")
+            lickSamples = np.where(helpers.diffsame(lickDetector) == 1)[0].astype(np.uint64)
+        else:
+            lickSamples = np.array([], dtype=np.uint64)
 
         # Get Reward Commands (measures voltage of output -- assume it's either low or high)
-        rewardCommand = self.get_timeline_var("rewardCommand")  # load reward command signal
-        rewardCommand = np.round(rewardCommand / np.max(rewardCommand))
-        rewardSamples = np.where(helpers.diffsame(rewardCommand) > 0.5)[0].astype(np.uint64)  # timeline samples when reward was delivered
+        reward_channel = next((c for c in ("rewardCommand", "rewardEcho") if c in tl_inputs), None)
+        if reward_channel is not None:
+            rewardCommand = self.get_timeline_var(reward_channel)
+            rewardCommand = np.round(rewardCommand / np.max(rewardCommand))
+            rewardSamples = np.where(helpers.diffsame(rewardCommand) > 0.5)[0].astype(np.uint64)
+        else:
+            rewardSamples = np.array([], dtype=np.uint64)
 
-        # Now process photodiode signal
-        photodiode = self.get_timeline_var("photoDiode")  # load lick detector copy
+        if self.opts.use_photodiode:
+            # Now process photodiode signal
+            photodiode = self.get_timeline_var("photoDiode")  # load lick detector copy
 
-        # Remove any slow trends
-        pdDetrend = sp.signal.detrend(photodiode)
-        pdDetrend = (pdDetrend - pdDetrend.min()) / pdDetrend.ptp()
+            # Remove any slow trends
+            pdDetrend = sp.signal.detrend(photodiode)
+            pdDetrend = (pdDetrend - pdDetrend.min()) / np.ptp(pdDetrend)
 
-        # median filter and take smooth derivative
-        hfpd = 10
-        refreshRate = 30  # hz
-        refreshSamples = int(1.0 / refreshRate / np.mean(np.diff(timestamps)))
-        pdMedFilt = sp.ndimage.median_filter(pdDetrend, size=refreshSamples)
-        pdDerivative, pdIndex = helpers.fivePointDer(pdMedFilt, hfpd, returnIndex=True)
-        pdDerivative = sp.stats.zscore(pdDerivative)
-        pdDerTime = timestamps[pdIndex]
+            # median filter and take smooth derivative
+            hfpd = 10
+            refreshRate = 30  # hz
+            refreshSamples = int(1.0 / refreshRate / np.mean(np.diff(timestamps)))
+            pdMedFilt = sp.ndimage.median_filter(pdDetrend, size=refreshSamples)
+            pdDerivative, pdIndex = helpers.fivePointDer(pdMedFilt, hfpd, returnIndex=True)
+            pdDerivative = sp.stats.zscore(pdDerivative)
+            pdDerTime = timestamps[pdIndex]
 
-        # find upward and downward peaks, not perfect but in practice close enough
-        locUp = sp.signal.find_peaks(pdDerivative, height=1, distance=refreshSamples / 2)
-        locDn = sp.signal.find_peaks(-pdDerivative, height=1, distance=refreshSamples / 2)
-        flipTimes = np.concatenate((pdDerTime[locUp[0]], pdDerTime[locDn[0]]))
-        flipValue = np.concatenate((np.ones(len(locUp[0])), np.zeros(len(locDn[0]))))
-        flipSortIdx = np.argsort(flipTimes)
-        flipTimes = flipTimes[flipSortIdx]
-        flipValue = flipValue[flipSortIdx]
+            # find upward and downward peaks, not perfect but in practice close enough
+            locUp = sp.signal.find_peaks(pdDerivative, height=1, distance=refreshSamples / 2)
+            locDn = sp.signal.find_peaks(-pdDerivative, height=1, distance=refreshSamples / 2)
+            flipTimes = np.concatenate((pdDerTime[locUp[0]], pdDerTime[locDn[0]]))
+            flipValue = np.concatenate((np.ones(len(locUp[0])), np.zeros(len(locDn[0]))))
+            flipSortIdx = np.argsort(flipTimes)
+            flipTimes = flipTimes[flipSortIdx]
+            flipValue = flipValue[flipSortIdx]
 
-        # Naive Method (just look for flips before and after trialstart/trialend mpep message:
-        # A sophisticated message uses the time of the photodiode ramps, but those are really just for safety and rare manual curation...
-        firstFlipIndex = np.array([np.where(flipTimes >= mpepStart)[0][0] for mpepStart in mpepStartTimes])
-        startTrialIndex = helpers.nearestpoint(flipTimes[firstFlipIndex], timestamps)[0]  # returns frame index of first photodiode flip in each trial
+            # Naive Method (just look for flips before and after trialstart/trialend mpep message:
+            # A sophisticated message uses the time of the photodiode ramps, but those are really just for safety and rare manual curation...
+            firstFlipIndex = np.array([np.where(flipTimes >= mpepStart)[0][0] for mpepStart in mpepStartTimes])
+            startTrialIndex = helpers.nearestpoint(flipTimes[firstFlipIndex], timestamps)[0]  # returns frame index of first photodiode flip in each trial
 
-        # Check that first flip is always down -- all of the vrControl code prepares trials in this way
-        if datetime.strptime(self.date, "%Y-%m-%d") >= datetime.strptime("2022-08-30", "%Y-%m-%d"):
-            # But it didn't prepare it this way before august 30th :(
-            assert np.all(flipValue[firstFlipIndex] == 0), f"In session {self.sessionPrint()}, first flips in trial are not all down!!"
+            # Check that first flip is always down -- all of the vrControl code prepares trials in this way
+            if datetime.strptime(self.date, "%Y-%m-%d") >= datetime.strptime("2022-08-30", "%Y-%m-%d"):
+                # But it didn't prepare it this way before august 30th :(
+                assert np.all(flipValue[firstFlipIndex] == 0), f"In session {self.session_print()}, first flips in trial are not all down!!"
+        else:
+            # No usable photodiode -- use the mpep TrialStart UDP times directly
+            startTrialIndex = helpers.nearestpoint(mpepStartTimes, timestamps)[0]
 
         # Check shapes of timeline arrays
         assert timestamps.ndim == 1, "timelineTimestamps is not a 1-d array!"
